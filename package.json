@@ -15,7 +15,7 @@
     "fmt": "prettier --write './*.{mjs,js,ts,md,json,html}' './{src,docs,tests}/{,**/}*.{mjs,js,ts,md,json,html}'",
     "fmt_test": "test $(prettier -l './*.{mjs,js,ts,md,json,html}' './{src,docs,tests}/{**/,}*.{mjs,js,ts,md,json,html}' | wc -l) -eq 0",
     "watchtest": "CHROME_ONLY=1 karma start --no-single-run",
-    "install": "npm run build"
+    "prepare": "npm run build"
   },
   "husky": {
     "hooks": {
