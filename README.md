@@ -152,9 +152,10 @@ onconnect = function (event) {
 
 ## API
 
-### `Comlink.wrap(endpoint)` and `Comlink.expose(value, endpoint?)`
+### `Comlink.wrap(endpoint)` and `Comlink.expose(value, endpoint?, allowedOrigins?)`
 
-Comlink’s goal is to make _exposed_ values from one thread available in the other. `expose` exposes `value` on `endpoint`, where `endpoint` is a [`postMessage`-like interface][endpoint].
+Comlink’s goal is to make _exposed_ values from one thread available in the other. `expose` exposes `value` on `endpoint`, where `endpoint` is a [`postMessage`-like interface][endpoint] and `allowedOrigins` is an array of
+RegExp or strings defining which origins should be allowed access (defaults to special case of `['*']` for all origins).
 
 `wrap` wraps the _other_ end of the message channel and returns a proxy. The proxy will have all properties and functions of the exposed value, but access and invocations are inherently asynchronous. This means that a function that returns a number will now return _a promise_ for a number. **As a rule of thumb: If you are using the proxy, put `await` in front of it.** Exceptions will be caught and re-thrown on the other side.
 
@@ -211,7 +212,7 @@ Note that this particular transfer handler won’t create an actual `Event`, but
 
 ### `Comlink.releaseProxy`
 
-Every proxy created by Comlink has the `[releaseProxy]` method.
+Every proxy created by Comlink has the `[releaseProxy]()` method.
 Calling it will detach the proxy and the exposed object from the message channel, allowing both ends to be garbage collected.
 
 ```js
@@ -220,10 +221,16 @@ const proxy = Comlink.wrap(port);
 proxy[Comlink.releaseProxy]();
 ```
 
+If the browser supports the [WeakRef proposal], `[releaseProxy]()` will be called automatically when the proxy created by `wrap()` gets garbage collected.
+
+### `Comlink.finalizer`
+
+If an exposed object has a property `[Comlink.finalizer]`, the property will be invoked as a function when the proxy is being released. This can happen either through a manual invocation of `[releaseProxy]()` or automatically during garbage collection if the runtime supports the [WeakRef proposal] (see `Comlink.releaseProxy` above). Note that when the finalizer function is invoked, the endpoint is closed and no more communication can happen.
+
 ### `Comlink.createEndpoint`
 
-Every proxy created by Comlink has the `[createEndpoint]` method.
-Calling it will return a new `MessagePort`, that has been hooked up to the same object as the proxy that `[createEndpoint]` has been called on.
+Every proxy created by Comlink has the `[createEndpoint]()` method.
+Calling it will return a new `MessagePort`, that has been hooked up to the same object as the proxy that `[createEndpoint]()` has been called on.
 
 ```js
 const port = myProxy[Comlink.createEndpoint]();
@@ -248,7 +255,7 @@ Comlink works with Node’s [`worker_threads`][worker_threads] module. Take a lo
 
 [webworker]: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API
 [umd]: https://github.com/umdjs/umd
-[transferable]: https://developer.mozilla.org/en-US/docs/Web/API/Transferable
+[transferable]: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Transferable_objects
 [messageport]: https://developer.mozilla.org/en-US/docs/Web/API/MessagePort
 [examples]: https://github.com/GoogleChromeLabs/comlink/tree/master/docs/examples
 [dist]: https://github.com/GoogleChromeLabs/comlink/tree/master/dist
@@ -260,6 +267,7 @@ Comlink works with Node’s [`worker_threads`][worker_threads] module. Take a lo
 [structured clone table]: structured-clone-table.md
 [event]: https://developer.mozilla.org/en-US/docs/Web/API/Event
 [worker_threads]: https://nodejs.org/api/worker_threads.html
+[weakref proposal]: https://github.com/tc39/proposal-weakrefs
 
 ## Additional Resources
 

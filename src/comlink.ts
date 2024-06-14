@@ -1,14 +1,7 @@
 /**
- * Copyright 2019 Google Inc. All Rights Reserved.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *     http://www.apache.org/licenses/LICENSE-2.0
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * @license
+ * Copyright 2019 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import {
@@ -25,6 +18,7 @@ export type { Endpoint };
 export const proxyMarker = Symbol("Comlink.proxy");
 export const createEndpoint = Symbol("Comlink.endpoint");
 export const releaseProxy = Symbol("Comlink.releaseProxy");
+export const finalizer = Symbol("Comlink.finalizer");
 
 const throwMarker = Symbol("Comlink.thrown");
 
@@ -281,9 +275,32 @@ export const transferHandlers = new Map<
   ["throw", throwTransferHandler],
 ]);
 
-export function expose(obj: any, ep: Endpoint = self as any) {
+function isAllowedOrigin(
+  allowedOrigins: (string | RegExp)[],
+  origin: string
+): boolean {
+  for (const allowedOrigin of allowedOrigins) {
+    if (origin === allowedOrigin || allowedOrigin === "*") {
+      return true;
+    }
+    if (allowedOrigin instanceof RegExp && allowedOrigin.test(origin)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function expose(
+  obj: any,
+  ep: Endpoint = globalThis as any,
+  allowedOrigins: (string | RegExp)[] = ["*"]
+) {
   ep.addEventListener("message", function callback(ev: MessageEvent) {
     if (!ev || !ev.data) {
+      return;
+    }
+    if (!isAllowedOrigin(allowedOrigins, ev.origin)) {
+      console.warn(`Invalid origin '${ev.origin}' for comlink proxy`);
       return;
     }
     const { id, type, path } = {
@@ -347,7 +364,18 @@ export function expose(obj: any, ep: Endpoint = self as any) {
           // detach and deactive after sending release response above.
           ep.removeEventListener("message", callback as any);
           closeEndPoint(ep);
+          if (finalizer in obj && typeof obj[finalizer] === "function") {
+            obj[finalizer]();
+          }
         }
+      })
+      .catch((error) => {
+        // Send Serialization Error To Caller
+        const [wireValue, transferables] = toWireValue({
+          value: new TypeError("Unserializable return value"),
+          [throwMarker]: 0,
+        });
+        ep.postMessage({ ...wireValue, id }, transferables);
       });
   } as any);
   if (ep.start) {
@@ -373,6 +401,50 @@ function throwIfProxyReleased(isReleased: boolean) {
   }
 }
 
+function releaseEndpoint(ep: Endpoint) {
+  return requestResponseMessage(ep, {
+    type: MessageType.RELEASE,
+  }).then(() => {
+    closeEndPoint(ep);
+  });
+}
+
+interface FinalizationRegistry<T> {
+  new (cb: (heldValue: T) => void): FinalizationRegistry<T>;
+  register(
+    weakItem: object,
+    heldValue: T,
+    unregisterToken?: object | undefined
+  ): void;
+  unregister(unregisterToken: object): void;
+}
+declare var FinalizationRegistry: FinalizationRegistry<Endpoint>;
+
+const proxyCounter = new WeakMap<Endpoint, number>();
+const proxyFinalizers =
+  "FinalizationRegistry" in globalThis &&
+  new FinalizationRegistry((ep: Endpoint) => {
+    const newCount = (proxyCounter.get(ep) || 0) - 1;
+    proxyCounter.set(ep, newCount);
+    if (newCount === 0) {
+      releaseEndpoint(ep);
+    }
+  });
+
+function registerProxy(proxy: object, ep: Endpoint) {
+  const newCount = (proxyCounter.get(ep) || 0) + 1;
+  proxyCounter.set(ep, newCount);
+  if (proxyFinalizers) {
+    proxyFinalizers.register(proxy, ep, proxy);
+  }
+}
+
+function unregisterProxy(proxy: object) {
+  if (proxyFinalizers) {
+    proxyFinalizers.unregister(proxy);
+  }
+}
+
 function createProxy<T>(
   ep: Endpoint,
   path: (string | number | symbol)[] = [],
@@ -387,13 +459,9 @@ function createProxy<T>(
       }
       if (prop === releaseProxy) {
         return () => {
-          return requestResponseMessage(ep, {
-            type: MessageType.RELEASE,
-            path: path.map((p) => p.toString()),
-          }).then(() => {
-            closeEndPoint(ep);
-            isProxyReleased = true;
-          });
+          unregisterProxy(proxy);
+          releaseEndpoint(ep);
+          isProxyReleased = true;
         };
       }
       if (prop === "then") {
@@ -460,6 +528,7 @@ function createProxy<T>(
       ).then(fromWireValue);
     },
   });
+  registerProxy(proxy, ep);
   return proxy as any;
 }
 
@@ -478,13 +547,13 @@ export function transfer<T>(obj: T, transfers: Transferable[]): T {
   return obj;
 }
 
-export function proxy<T>(obj: T): T & ProxyMarked {
+export function proxy<T extends {}>(obj: T): T & ProxyMarked {
   return Object.assign(obj, { [proxyMarker]: true }) as any;
 }
 
 export function windowEndpoint(
   w: PostMessageWithOrigin,
-  context: EventSource = self,
+  context: EventSource = globalThis,
   targetOrigin = "*"
 ): Endpoint {
   return {
